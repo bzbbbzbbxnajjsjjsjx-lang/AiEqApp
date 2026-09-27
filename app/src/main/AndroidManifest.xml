@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Audio Effect & Routing Permissions -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@android:drawable/ic_lock_silent_mode_off"
+        android:label="AI EQ"
+        android:roundIcon="@android:drawable/ic_lock_silent_mode_off"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:label="AI EQ"
+            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Notification Listener Service for Active MediaSession Tracking -->
+        <service
+            android:name=".media.AiEqNotificationListener"
+            android:label="AI EQ Media Listener"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Broadcast Receiver for Player Audio Sessions -->
+        <receiver
+            android:name=".audio.AudioEffectBroadcastReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.action.OPEN_AUDIO_EFFECT_CONTROL_SESSION" />
+                <action android:name="android.media.action.CLOSE_AUDIO_EFFECT_CONTROL_SESSION" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>
