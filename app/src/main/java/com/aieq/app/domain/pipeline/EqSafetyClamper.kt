@@ -41,10 +41,12 @@ object EqSafetyClamper {
             val aiDelta = if (isAiEnabled && aiAdjustment != null) {
                 val bandAdj = aiAdjustment.adjustments.find { it.bandIndex == idx || it.frequencyHz == baseBand.centerFreqHz }
                 val rawDelta = bandAdj?.deltaGainDb ?: 0.0f
+                val safeDelta = if (rawDelta.isNaN() || rawDelta.isInfinite()) 0.0f else rawDelta
                 // Clamp AI delta to [-5dB, +5dB]
-                val clampedDelta = rawDelta.coerceIn(MIN_AI_DELTA_DB, MAX_AI_DELTA_DB)
+                val clampedDelta = safeDelta.coerceIn(MIN_AI_DELTA_DB, MAX_AI_DELTA_DB)
                 // Scale by intensity
-                clampedDelta * aiAdjustment.intensity
+                val scaled = clampedDelta * aiAdjustment.intensity
+                if (scaled.isNaN() || scaled.isInfinite()) 0.0f else scaled
             } else {
                 0.0f
             }
@@ -52,7 +54,11 @@ object EqSafetyClamper {
             val bias = prefBias.getOrElse(idx) { 0.0f }
 
             val rawCombinedGain = baseBand.gainDb + aiDelta + bias
-            val finalClampedGain = rawCombinedGain.coerceIn(MIN_FINAL_GAIN_DB, MAX_FINAL_GAIN_DB)
+            val finalClampedGain = if (rawCombinedGain.isNaN() || rawCombinedGain.isInfinite()) {
+                baseBand.gainDb
+            } else {
+                rawCombinedGain.coerceIn(MIN_FINAL_GAIN_DB, MAX_FINAL_GAIN_DB)
+            }
 
             EqBand(
                 index = baseBand.index,
@@ -65,10 +71,12 @@ object EqSafetyClamper {
         // 3. Preamp compensation (anti-clipping rule)
         // If highest band is +G dB, digital preamp must be at least -G dB to prevent digital clipping
         val maxPositiveGain = synthesizedBands.maxOfOrNull { it.gainDb } ?: 0.0f
-        val antiClippingPreamp = if (maxPositiveGain > 0f) -maxPositiveGain else 0.0f
+        val safeMaxPositiveGain = if (maxPositiveGain.isNaN() || maxPositiveGain.isInfinite()) 0.0f else maxPositiveGain
+        val antiClippingPreamp = if (safeMaxPositiveGain > 0f) -safeMaxPositiveGain else 0.0f
 
         // Respect base AutoEq preamp if it's already more conservative
-        val finalPreamp = min(autoEq.preampDb, antiClippingPreamp)
+        val safeBasePreamp = if (autoEq.preampDb.isNaN() || autoEq.preampDb.isInfinite()) 0.0f else autoEq.preampDb
+        val finalPreamp = min(safeBasePreamp, antiClippingPreamp)
 
         val reasoningText = if (isAiEnabled && aiAdjustment != null) {
             aiAdjustment.reasoning
