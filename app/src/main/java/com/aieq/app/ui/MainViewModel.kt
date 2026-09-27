@@ -41,7 +41,7 @@ data class MainUiState(
     val hasApiKey: Boolean = false
 )
 
-class MainViewModel(
+class MainViewModel @JvmOverloads constructor(
     application: Application,
     private val audioEngine: AudioEngineManager = AudioEngineManager(application),
     private val mediaDetection: MediaDetectionManager = MediaDetectionManager(application)
