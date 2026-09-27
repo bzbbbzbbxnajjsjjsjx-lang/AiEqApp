@@ -23,7 +23,13 @@ class AudioEngineManager(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val isMockMode: Boolean = false
 ) {
-    private val audioManager = if (!isMockMode) context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager else null
+    private val audioManager = if (!isMockMode) {
+        try {
+            context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        } catch (t: Throwable) {
+            null
+        }
+    } else null
 
     private var activeEqualizer: Equalizer? = null
     private var currentSessionId: Int = 0
@@ -48,76 +54,95 @@ class AudioEngineManager(
 
     init {
         if (!isMockMode) {
-            updateOutputRouting()
-            audioDeviceCallback?.let { audioManager?.registerAudioDeviceCallback(it, null) }
+            try {
+                updateOutputRouting()
+                audioDeviceCallback?.let { audioManager?.registerAudioDeviceCallback(it, null) }
+            } catch (t: Throwable) {
+                // Safeguard against platform routing or looper initialization issues
+            }
         }
 
         // Observe player session broadcasts (Spotify, YouTube Music, etc.)
         scope.launch {
-            AudioEffectBroadcastReceiver.sessionEvents.collect { event ->
-                when (event) {
-                    is AudioEffectBroadcastReceiver.SessionEvent.Opened -> {
-                        attachToSession(event.sessionId)
-                    }
-                    is AudioEffectBroadcastReceiver.SessionEvent.Closed -> {
-                        if (currentSessionId == event.sessionId) {
-                            detachCurrentSession()
+            try {
+                AudioEffectBroadcastReceiver.sessionEvents.collect { event ->
+                    when (event) {
+                        is AudioEffectBroadcastReceiver.SessionEvent.Opened -> {
+                            attachToSession(event.sessionId)
+                        }
+                        is AudioEffectBroadcastReceiver.SessionEvent.Closed -> {
+                            if (currentSessionId == event.sessionId) {
+                                detachCurrentSession()
+                            }
                         }
                     }
                 }
+            } catch (t: Throwable) {
+                // Keep coroutine alive
             }
         }
     }
 
     fun updateOutputRouting() {
-        if (audioManager == null) return
+        val am = audioManager ?: return
 
-        val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        var name = "Internal Speaker"
-        var type = "Speaker"
-        var isBt = false
-        var isHp = false
-        var isBle = false
+        try {
+            val outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            var name = "Internal Speaker"
+            var type = "Speaker"
+            var isBt = false
+            var isHp = false
+            var isBle = false
 
-        for (dev in outputs) {
-            when (dev.type) {
-                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> {
-                    name = dev.productName.toString().ifBlank { "Bluetooth Headset" }
-                    type = "Bluetooth A2DP"
-                    isBt = true
-                    isHp = true
-                    break
+            for (dev in outputs) {
+                // Accessing productName on Bluetooth devices can throw SecurityException on Android 12+ if BLUETOOTH_CONNECT is missing
+                val safeDevName = try {
+                    dev.productName?.toString()?.ifBlank { null }
+                } catch (t: Throwable) {
+                    null
                 }
-                AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER -> {
-                    name = dev.productName.toString().ifBlank { "Bluetooth LE Audio" }
-                    type = "LE Audio"
-                    isBt = true
-                    isHp = true
-                    isBle = true
-                    break
-                }
-                AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> {
-                    name = dev.productName.toString().ifBlank { "Wired Headphones" }
-                    type = "Wired 3.5mm"
-                    isHp = true
-                    break
-                }
-                AudioDeviceInfo.TYPE_USB_HEADSET -> {
-                    name = dev.productName.toString().ifBlank { "USB-C Audio" }
-                    type = "USB Audio"
-                    isHp = true
-                    break
+
+                when (dev.type) {
+                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> {
+                        name = safeDevName ?: "Bluetooth Headset"
+                        type = "Bluetooth A2DP"
+                        isBt = true
+                        isHp = true
+                        break
+                    }
+                    AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER -> {
+                        name = safeDevName ?: "Bluetooth LE Audio"
+                        type = "LE Audio"
+                        isBt = true
+                        isHp = true
+                        isBle = true
+                        break
+                    }
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> {
+                        name = safeDevName ?: "Wired Headphones"
+                        type = "Wired 3.5mm"
+                        isHp = true
+                        break
+                    }
+                    AudioDeviceInfo.TYPE_USB_HEADSET -> {
+                        name = safeDevName ?: "USB-C Audio"
+                        type = "USB Audio"
+                        isHp = true
+                        break
+                    }
                 }
             }
-        }
 
-        _outputInfo.value = _outputInfo.value.copy(
-            deviceName = name,
-            deviceType = type,
-            isBluetooth = isBt,
-            isHeadphones = isHp,
-            isLeAudio = isBle
-        )
+            _outputInfo.value = _outputInfo.value.copy(
+                deviceName = name,
+                deviceType = type,
+                isBluetooth = isBt,
+                isHeadphones = isHp,
+                isLeAudio = isBle
+            )
+        } catch (t: Throwable) {
+            // Guard against platform/permission restrictions during device query
+        }
     }
 
     fun attachToSession(sessionId: Int): EqCapabilityStatus {
@@ -134,7 +159,7 @@ class AudioEngineManager(
             activeEqualizer?.release()
             activeEqualizer = null
 
-            val eq = Equalizer(1000, sessionId)
+            val eq = Equalizer(0, sessionId)
             eq.enabled = true
             val hasCtrl = eq.hasControl()
 
@@ -156,11 +181,7 @@ class AudioEngineManager(
                 _outputInfo.value = _outputInfo.value.copy(activeSessionId = sessionId, capabilityStatus = status)
                 return status
             }
-        } catch (e: UnsupportedOperationException) {
-            val status = if (sessionId == 0) EqCapabilityStatus.RESTRICTED_SESSION_ZERO else EqCapabilityStatus.UNSUPPORTED
-            _outputInfo.value = _outputInfo.value.copy(activeSessionId = sessionId, capabilityStatus = status)
-            return status
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             val status = if (sessionId == 0) EqCapabilityStatus.RESTRICTED_SESSION_ZERO else EqCapabilityStatus.UNSUPPORTED
             _outputInfo.value = _outputInfo.value.copy(activeSessionId = sessionId, capabilityStatus = status)
             return status
@@ -168,14 +189,19 @@ class AudioEngineManager(
     }
 
     fun detachCurrentSession() {
-        activeEqualizer?.enabled = false
-        activeEqualizer?.release()
-        activeEqualizer = null
-        currentSessionId = 0
-        _outputInfo.value = _outputInfo.value.copy(
-            activeSessionId = 0,
-            capabilityStatus = EqCapabilityStatus.NO_ACTIVE_SESSION
-        )
+        try {
+            activeEqualizer?.enabled = false
+            activeEqualizer?.release()
+        } catch (t: Throwable) {
+            // Ignore teardown errors
+        } finally {
+            activeEqualizer = null
+            currentSessionId = 0
+            _outputInfo.value = _outputInfo.value.copy(
+                activeSessionId = 0,
+                capabilityStatus = EqCapabilityStatus.NO_ACTIVE_SESSION
+            )
+        }
     }
 
     fun applyProfile(profile: FinalEqProfile): Boolean {
@@ -185,34 +211,29 @@ class AudioEngineManager(
             return true
         }
 
-        val eq = activeEqualizer ?: run {
-            // Attempt to bind to session 0 if not attached yet
-            if (attachToSession(0) != EqCapabilityStatus.SUPPORTED) {
-                return false
-            }
-            activeEqualizer
-        } ?: return false
+        // CRITICAL STARTUP SAFETY:
+        // Do NOT eagerly instantiate Equalizer or attach to session 0 at startup!
+        // Only apply to active hardware if a valid session is already attached.
+        val eq = activeEqualizer ?: return false
 
         return try {
             eq.enabled = profile.isEnabled
 
             if (profile.isEnabled) {
                 val numBands = eq.numberOfBands.toInt()
-                val range = eq.bandLevelRange // e.g. [-1500, 1500] in millibels
+                val range = eq.bandLevelRange
                 val minMb = range[0].toInt()
                 val maxMb = range[1].toInt()
 
-                // Apply each band
                 profile.bands.forEachIndexed { idx, band ->
                     if (idx < numBands) {
-                        // 1 dB = 100 millibels
                         val targetMb = (band.gainDb * 100f).roundToInt().coerceIn(minMb, maxMb)
                         eq.setBandLevel(idx.toShort(), targetMb.toShort())
                     }
                 }
             }
             true
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             false
         }
     }
@@ -223,7 +244,7 @@ class AudioEngineManager(
             activeEqualizer?.enabled = false
             activeEqualizer?.release()
             activeEqualizer = null
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             // Ignore teardown exceptions
         }
     }

@@ -18,7 +18,11 @@ class MediaDetectionManager(
     private val context: Context,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 ) {
-    private val mediaSessionManager = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
+    private val mediaSessionManager = try {
+        context.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
+    } catch (t: Throwable) {
+        null
+    }
 
     private val _currentTrack = MutableStateFlow(MockMediaTrackProvider.defaultTrack)
     val currentTrack: StateFlow<TrackMetadata> = _currentTrack.asStateFlow()
@@ -30,46 +34,68 @@ class MediaDetectionManager(
 
     private val controllerCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) {
-            updateFromMetadata(metadata, activeController?.playbackState?.state == PlaybackState.STATE_PLAYING)
+            try {
+                updateFromMetadata(metadata, activeController?.playbackState?.state == PlaybackState.STATE_PLAYING)
+            } catch (t: Throwable) {
+                // Ignore callback failure
+            }
         }
 
         override fun onPlaybackStateChanged(state: PlaybackState?) {
-            val isPlaying = state?.state == PlaybackState.STATE_PLAYING
-            _currentTrack.value = _currentTrack.value.copy(isPlaying = isPlaying)
+            try {
+                val isPlaying = state?.state == PlaybackState.STATE_PLAYING
+                _currentTrack.value = _currentTrack.value.copy(isPlaying = isPlaying)
+            } catch (t: Throwable) {
+                // Ignore callback failure
+            }
         }
     }
 
     private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
-        handleControllersChanged(controllers)
+        try {
+            handleControllersChanged(controllers)
+        } catch (t: Throwable) {
+            // Ignore listener error
+        }
     }
 
     fun startListening() {
-        checkAndRegisterSessions()
+        try {
+            checkAndRegisterSessions()
+        } catch (t: Throwable) {
+            // Ensure listening startup never crashes
+        }
 
         // Also observe notification listener updates
         scope.launch {
-            AiEqNotificationListener.latestNotificationTrack.collect { track ->
-                if (track != null && track.isValid && !isLiveControllerPlaying()) {
-                    _currentTrack.value = track
+            try {
+                AiEqNotificationListener.latestNotificationTrack.collect { track ->
+                    if (track != null && track.isValid && !isLiveControllerPlaying()) {
+                        _currentTrack.value = track
+                    }
                 }
+            } catch (t: Throwable) {
+                // Keep coroutine alive
             }
         }
     }
 
     fun checkAndRegisterSessions() {
-        if (mediaSessionManager == null) return
+        val msm = mediaSessionManager ?: return
         val componentName = AiEqNotificationListener.getComponentName(context)
 
         try {
-            val controllers = mediaSessionManager.getActiveSessions(componentName)
+            val controllers = msm.getActiveSessions(componentName)
             _hasNotificationAccess.value = true
-            mediaSessionManager.removeOnActiveSessionsChangedListener(sessionsListener)
-            mediaSessionManager.addOnActiveSessionsChangedListener(sessionsListener, componentName)
+            try {
+                msm.removeOnActiveSessionsChangedListener(sessionsListener)
+            } catch (ignored: Throwable) {}
+            msm.addOnActiveSessionsChangedListener(sessionsListener, componentName)
             handleControllersChanged(controllers)
         } catch (e: SecurityException) {
             _hasNotificationAccess.value = false
-        } catch (e: Exception) {
-            // Ignore other unexpected platform exceptions
+        } catch (t: Throwable) {
+            _hasNotificationAccess.value = false
         }
     }
 
@@ -78,14 +104,17 @@ class MediaDetectionManager(
             return
         }
 
-        // Find currently playing controller or the first one
         val playingController = controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
             ?: controllers.firstOrNull()
 
         if (playingController != activeController) {
-            activeController?.unregisterCallback(controllerCallback)
+            try {
+                activeController?.unregisterCallback(controllerCallback)
+            } catch (ignored: Throwable) {}
             activeController = playingController
-            activeController?.registerCallback(controllerCallback)
+            try {
+                activeController?.registerCallback(controllerCallback)
+            } catch (ignored: Throwable) {}
         }
 
         activeController?.let { ctrl ->
@@ -97,34 +126,42 @@ class MediaDetectionManager(
     private fun updateFromMetadata(metadata: MediaMetadata?, isPlaying: Boolean, pkg: String = activeController?.packageName ?: "") {
         if (metadata == null) return
 
-        val title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)
-            ?: metadata.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
-            ?: ""
-        val artist = metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
-            ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
-            ?: ""
-        val album = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
-        val artUri = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
-            ?: metadata.getString(MediaMetadata.METADATA_KEY_ART_URI)
-        val duration = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION)
-        val mediaId = metadata.getString(MediaMetadata.METADATA_KEY_MEDIA_ID) ?: ""
+        try {
+            val title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)
+                ?: metadata.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
+                ?: ""
+            val artist = metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
+                ?: ""
+            val album = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
+            val artUri = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
+                ?: metadata.getString(MediaMetadata.METADATA_KEY_ART_URI)
+            val duration = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION)
+            val mediaId = metadata.getString(MediaMetadata.METADATA_KEY_MEDIA_ID) ?: ""
 
-        if (title.isNotBlank()) {
-            _currentTrack.value = TrackMetadata(
-                title = title,
-                artist = artist,
-                album = album,
-                albumArtUri = artUri,
-                durationMs = duration,
-                packageName = pkg,
-                mediaId = mediaId,
-                isPlaying = isPlaying
-            )
+            if (title.isNotBlank()) {
+                _currentTrack.value = TrackMetadata(
+                    title = title,
+                    artist = artist,
+                    album = album,
+                    albumArtUri = artUri,
+                    durationMs = duration,
+                    packageName = pkg,
+                    mediaId = mediaId,
+                    isPlaying = isPlaying
+                )
+            }
+        } catch (t: Throwable) {
+            // Guard against corrupted metadata
         }
     }
 
     private fun isLiveControllerPlaying(): Boolean {
-        return activeController?.playbackState?.state == PlaybackState.STATE_PLAYING
+        return try {
+            activeController?.playbackState?.state == PlaybackState.STATE_PLAYING
+        } catch (t: Throwable) {
+            false
+        }
     }
 
     fun setMockTrack(track: TrackMetadata) {
@@ -136,7 +173,7 @@ class MediaDetectionManager(
             activeController?.unregisterCallback(controllerCallback)
             activeController = null
             mediaSessionManager?.removeOnActiveSessionsChangedListener(sessionsListener)
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             // Ignore teardown exceptions
         }
     }

@@ -158,8 +158,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Refresh session detection on resume
-        viewModel.recomputeAndApplyEq()
+        // Refresh session detection on resume safely
+        try {
+            viewModel.recomputeAndApplyEq()
+        } catch (t: Throwable) {
+            // Ignore resume errors
+        }
     }
 
     private fun openNotificationAccessSettings() {
